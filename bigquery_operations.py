@@ -10,10 +10,17 @@ CREDENTIALS_PATH = "credenciales.json"
 PROJECT_ID = "sistema-consolidado-registro"
 DATASET_ID = "sistema_encuestas"
 
+import streamlit as st
 
 def get_client():
-    credentials = service_account.Credentials.from_service_account_file(
-        CREDENTIALS_PATH)
+    try:
+        # Intentar leer desde st.secrets (para Streamlit Cloud)
+        creds_info = dict(st.secrets["gcp_service_account"])
+        credentials = service_account.Credentials.from_service_account_info(creds_info)
+    except Exception:
+        # Modo local: leer del archivo json
+        credentials = service_account.Credentials.from_service_account_file(
+            CREDENTIALS_PATH)
     return bigquery.Client(credentials=credentials, project=PROJECT_ID)
 
 

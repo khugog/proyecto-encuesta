@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import uuid
 import base64
-from bigquery_operations import obtener_encuesta, editar_metadata_encuesta, editar_pregunta, eliminar_pregunta, agregar_nuevas_preguntas, obtener_padron, agregar_padron
+from bigquery_operations import obtener_encuesta, editar_metadata_encuesta, editar_pregunta, eliminar_pregunta, agregar_nuevas_preguntas, obtener_padron, agregar_padron, eliminar_colaboradores_masivo, modificar_lideres_masivo
 from components import render_question_builder_fields
 
 
@@ -20,6 +20,10 @@ def render_editar_encuesta(encuesta_id):
         return
 
     st.title("✏️ Editar Encuesta")
+    
+    nuevo_excel = None
+    excel_baja = None
+    excel_mod = None
 
     with st.container():
         titulo_nuevo = st.text_input(
@@ -115,19 +119,41 @@ def render_editar_encuesta(encuesta_id):
                     import pandas as pd
                     st.markdown("**➕ Adjuntar nuevo archivo o excel**")
                     nuevo_excel = st.file_uploader("Subir archivo Excel", type=["xlsx", "xls"], label_visibility="collapsed")
-                    if nuevo_excel is not None:
-                        if st.button("Subir y Agregar", type="primary"):
-                            try:
-                                df_nuevo = pd.read_excel(nuevo_excel)
-                                agregados, ignorados = agregar_padron(encuesta_id, df_nuevo)
-                                if agregados > 0:
-                                    st.success(f"✅ Se agregaron {agregados} nuevos registros exitosamente.")
-                                else:
-                                    st.info("ℹ️ No se agregaron registros nuevos (todos ya existían).")
-                                if ignorados > 0:
-                                    st.warning(f"⚠️ Se ignoraron {ignorados} registros duplicados.")
-                            except Exception as e:
-                                st.error(f"Error al procesar el archivo: {e}")
+
+            st.divider()
+            st.markdown("### ⚙️ Gestión Masiva de Padrón")
+            col_baja, col_mod = st.columns([0.4, 0.6], gap="large")
+            with col_baja:
+                with st.container(border=True):
+                    st.markdown("**🗑️ Baja Masiva de Colaboradores**")
+                    st.caption("Sube un Excel con los DNI a eliminar.")
+                    excel_baja = st.file_uploader("Subir Excel para Bajas", type=["xlsx", "xls"], key="baja_masiva", label_visibility="collapsed")
+
+            with col_mod:
+                with st.container(border=True):
+                    st.markdown("**🔄 Modificación Masiva de Líderes**")
+                    st.caption("Sube la Plantilla de Modificación con los DNI y los Nuevos Líderes.")
+                    
+                    c_up, c_dl = st.columns([0.65, 0.35])
+                    
+                    with c_dl:
+                        st.markdown(
+                            "<div style='margin-top: 10px;'><p style='font-size: 15px; font-weight: bold; color: #ff4b4b; margin-bottom: 8px;'>✨ Plantilla Excel</p></div>",
+                            unsafe_allow_html=True)
+                        try:
+                            with open("Plantilla_Modificación.xlsx", "rb") as template_file:
+                                st.download_button(
+                                    label="⬇️ Descargar",
+                                    data=template_file,
+                                    file_name="Plantilla_Modificación.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True
+                                )
+                        except Exception:
+                            pass
+
+                    with c_up:
+                        excel_mod = st.file_uploader("Subir Excel de Modificación", type=["xlsx", "xls"], key="mod_masiva", label_visibility="collapsed")
 
         st.divider()
         st.markdown("### 📋 Preguntas Actuales")
@@ -221,50 +247,19 @@ def render_editar_encuesta(encuesta_id):
                     "opciones": opciones
                 })
 
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.button("➕ Añadir otra pregunta", use_container_width=True):
-                st.session_state[f"preguntas_nuevas_{encuesta_id}"].append(
-                    str(uuid.uuid4()))
-                st.rerun()
-
-        with col2:
-            if len(st.session_state.get(
-                    f"preguntas_nuevas_{encuesta_id}", [])) > 0:
-                if st.button("🚀 Guardar Nuevas Preguntas",
-                             type="primary", use_container_width=True):
-                    hay_error = False
-                    if len(preguntas_agregar) == 0:
-                        st.warning("No has agregado ninguna pregunta nueva.")
-                        hay_error = True
-                    else:
-                        for idx, p in enumerate(preguntas_agregar):
-                            if not p["texto"].strip():
-                                st.error(
-                                    f"⚠️ La Nueva Pregunta {
-                                        idx + 1} no tiene texto. Presiona Enter o da click fuera del cuadro.")
-                                hay_error = True
-                            elif p["tipo"] in ["Opción única", "Opción múltiple"] and not p["opciones"]:
-                                st.error(
-                                    f"⚠️ La Nueva Pregunta {
-                                        idx + 1} de opciones está vacía.")
-                                hay_error = True
-
-                    if not hay_error:
-                        agregar_nuevas_preguntas(
-                            encuesta_id, preguntas_agregar)
-                        st.success("Preguntas agregadas exitosamente.")
-                        st.session_state[f"preguntas_nuevas_{encuesta_id}"] = [
-                        ]
-                        st.rerun()
+        if st.button("➕ Añadir otra pregunta"):
+            st.session_state[f"preguntas_nuevas_{encuesta_id}"].append(str(uuid.uuid4()))
+            st.rerun()
 
         st.divider()
         if st.button("💾 Guardar cambios", type="primary", use_container_width=True):
+            import pandas as pd
             logo_base64_final = logo_actual
             if nuevo_logo_empresa:
                 logo_base64_final = base64.b64encode(
                     nuevo_logo_empresa.getvalue()).decode("utf-8")
 
+            # 1. Metadatos
             editar_metadata_encuesta(
                 encuesta_id,
                 titulo_nuevo,
@@ -273,5 +268,47 @@ def render_editar_encuesta(encuesta_id):
                 logo_base64_final,
                 nueva_logo_position,
                 nuevo_color_fondo)
-            st.success("Cambios guardados exitosamente.")
+                
+            # 2. Nuevas preguntas
+            if len(preguntas_agregar) > 0:
+                hay_error = False
+                for idx, p in enumerate(preguntas_agregar):
+                    if not p["texto"].strip():
+                        st.error(f"⚠️ La Nueva Pregunta {idx + 1} no tiene texto.")
+                        hay_error = True
+                    elif p["tipo"] in ["Opción única", "Opción múltiple"] and not p["opciones"]:
+                        st.error(f"⚠️ La Nueva Pregunta {idx + 1} de opciones está vacía.")
+                        hay_error = True
+                
+                if not hay_error:
+                    agregar_nuevas_preguntas(encuesta_id, preguntas_agregar)
+                    st.session_state[f"preguntas_nuevas_{encuesta_id}"] = []
+                else:
+                    return # Si hay error en preguntas, detenemos el guardado para que lo corrijan
+                    
+            # 3. Acciones de Padrón
+            if "Privada" in enc.get("tipo_acceso", ""):
+                if nuevo_excel is not None:
+                    try:
+                        df_nuevo = pd.read_excel(nuevo_excel)
+                        agregar_padron(encuesta_id, df_nuevo)
+                    except Exception as e:
+                        st.error(f"Error al procesar el padrón agregado: {e}")
+                
+                if excel_baja is not None:
+                    try:
+                        df_baja = pd.read_excel(excel_baja, header=None)
+                        eliminar_colaboradores_masivo(encuesta_id, df_baja)
+                    except Exception as e:
+                        st.error(f"Error al procesar bajas masivas: {e}")
+                        
+                if excel_mod is not None:
+                    try:
+                        df_mod = pd.read_excel(excel_mod)
+                        modificar_lideres_masivo(encuesta_id, df_mod)
+                    except Exception as e:
+                        st.error(f"Error al procesar modificación de líderes: {e}")
+
+            st.toast("✅ Se realizaron todos los cambios exitosamente.")
+            st.session_state.pop("editando_encuesta_id", None)
             st.rerun()

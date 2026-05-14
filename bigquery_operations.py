@@ -682,3 +682,107 @@ def agregar_padron(encuesta_id, df_nuevo_padron):
         
     return agregados, ignorados
 
+
+def eliminar_colaboradores_masivo(encuesta_id, df_eliminar):
+    client = get_client()
+    
+    # df_eliminar fue leido con header=None, así que la columna 0 tiene todos los datos
+    dnis_raw = df_eliminar.iloc[:, 0].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().tolist()
+    
+    # Limpiamos posibles títulos que el usuario haya puesto en la fila 1
+    dnis = []
+    for d in dnis_raw:
+        d_lower = d.lower()
+        if d_lower not in ["", "nan", "none", "dni", "documento", "identificacion", "id"]:
+            dnis.append(d)
+    
+    if not dnis:
+        return 0
+        
+    # Leer todo el padron (como solucion al error 403 de DML en la capa gratuita)
+    query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.padron_encuestas`"
+    df_all = client.query(query).to_dataframe()
+    
+    if df_all.empty:
+        return 0
+        
+    df_all['dni_str'] = df_all['dni'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    
+    mask_to_delete = (df_all['encuesta_id'] == encuesta_id) & (df_all['dni_str'].isin(dnis))
+    num_eliminados = mask_to_delete.sum()
+    
+    if num_eliminados == 0:
+        return 0
+        
+    df_filtered = df_all[~mask_to_delete].copy()
+    df_filtered = df_filtered.drop(columns=['dni_str'])
+    
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+    client.load_table_from_dataframe(df_filtered, f"{PROJECT_ID}.{DATASET_ID}.padron_encuestas", job_config=job_config).result()
+    
+    return int(num_eliminados)
+
+
+def modificar_lideres_masivo(encuesta_id, df_modificacion):
+    client = get_client()
+    
+    col_dni = None
+    col_lider_anterior = None
+    col_nuevo_lider = None
+    
+    for c in df_modificacion.columns:
+        c_lower = str(c).lower()
+        if "dni" in c_lower:
+            col_dni = c
+        elif "reemplazar" in c_lower or "anterior" in c_lower:
+            col_lider_anterior = c
+        elif "nuevo" in c_lower or "correcto" in c_lower:
+            col_nuevo_lider = c
+            
+    if not col_dni or not col_nuevo_lider:
+        raise ValueError("El Excel debe contener al menos las columnas para DNI y Nuevo Líder.")
+        
+    # Leer todo el padron (evitar DML)
+    query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.padron_encuestas`"
+    df_all = client.query(query).to_dataframe()
+    
+    if df_all.empty:
+        return 0
+        
+    df_all['dni_str'] = df_all['dni'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    
+    num_modificados = 0
+    
+    for _, row in df_modificacion.iterrows():
+        dni = str(row[col_dni]).strip()
+        if dni.endswith('.0'):
+            dni = dni[:-2]
+            
+        if not dni or dni.lower() == "nan" or dni.lower() == "none":
+            continue
+            
+        nuevo_lider = str(row[col_nuevo_lider]).strip()
+        if not nuevo_lider or nuevo_lider.lower() == "nan":
+            continue
+            
+        mask = (df_all['encuesta_id'] == encuesta_id) & (df_all['dni_str'] == dni)
+        
+        if col_lider_anterior and pd.notna(row[col_lider_anterior]) and str(row[col_lider_anterior]).strip() and str(row[col_lider_anterior]).strip().lower() != "nan":
+            lider_anterior = str(row[col_lider_anterior]).strip()
+            mask = mask & (df_all['lider_directo'].astype(str) == lider_anterior)
+            
+        if mask.sum() > 0:
+            df_all.loc[mask, 'lider_directo'] = nuevo_lider
+            num_modificados += mask.sum()
+            
+    if num_modificados == 0:
+        return 0
+        
+    df_all = df_all.drop(columns=['dni_str'])
+    
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+    client.load_table_from_dataframe(df_all, f"{PROJECT_ID}.{DATASET_ID}.padron_encuestas", job_config=job_config).result()
+    
+    return int(num_modificados)
+
+

@@ -4,7 +4,6 @@ import base64
 import pandas as pd
 from bigquery_operations import crear_encuesta
 from components import render_question_builder_fields
-from padron_variables import build_default_mapping
 
 
 def get_base64_image(image_path):
@@ -487,6 +486,7 @@ def render_escenario_form():
             padron = st.file_uploader(
                 "", type=["xlsx", "xls"], label_visibility="collapsed", key="crear_padron")
             if padron:
+                from padron_variables import build_default_mapping, apply_padron_mapping
                 df_raw = pd.read_excel(padron)
                 mapping = build_default_mapping(df_raw.columns)
                 st.session_state["global_df_padron_temp"] = apply_padron_mapping(

@@ -1,7 +1,9 @@
+import os
 import uuid
 import json
 import pandas as pd
 from datetime import datetime
+from google.api_core import retry as api_retry
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
@@ -9,23 +11,73 @@ from google.oauth2 import service_account
 CREDENTIALS_PATH = "credenciales.json"
 PROJECT_ID = "sistema-consolidado-registro"
 DATASET_ID = "sistema_encuestas"
+BQ_TIMEOUT_SECONDS = 40
 
 import streamlit as st
 
-def get_client():
+
+def _build_credentials():
+    """Credenciales locales primero (evita demoras con st.secrets)."""
+    if os.path.isfile(CREDENTIALS_PATH):
+        return service_account.Credentials.from_service_account_file(
+            CREDENTIALS_PATH
+        )
     try:
-        # Intentar leer desde st.secrets (para Streamlit Cloud)
         creds_info = dict(st.secrets["gcp_service_account"])
-        credentials = service_account.Credentials.from_service_account_info(creds_info)
-    except Exception:
-        # Modo local: leer del archivo json
-        credentials = service_account.Credentials.from_service_account_file(
-            CREDENTIALS_PATH)
+        return service_account.Credentials.from_service_account_info(creds_info)
+    except Exception as exc:
+        raise FileNotFoundError(
+            f"No se encontró `{CREDENTIALS_PATH}` ni secrets de GCP en Streamlit."
+        ) from exc
+
+
+@st.cache_resource(show_spinner=False)
+def get_client():
+    credentials = _build_credentials()
     return bigquery.Client(credentials=credentials, project=PROJECT_ID)
 
 
+def _query_to_dataframe(client, query, job_config=None, timeout_seconds=None):
+    """Ejecuta SQL con tope de espera (evita pantalla cargando sin fin)."""
+    timeout = timeout_seconds or BQ_TIMEOUT_SECONDS
+    retry_policy = api_retry.Retry(deadline=timeout)
+    cfg = job_config or bigquery.QueryJobConfig(use_query_cache=True)
+    job = client.query(query, job_config=cfg)
+    try:
+        job.result(timeout=timeout, retry=retry_policy)
+    except Exception as exc:
+        raise TimeoutError(
+            f"BigQuery no respondió en {timeout} segundos. "
+            "Comprueba tu conexión a internet, el archivo credenciales.json "
+            "y que el firewall permita acceso a Google Cloud."
+        ) from exc
+    return job.to_dataframe()
+
+
+def _table_has_column(client, table_name, column_name):
+    """True si la columna existe en BigQuery (compatibilidad con tablas antiguas)."""
+    try:
+        table = client.get_table(f"{PROJECT_ID}.{DATASET_ID}.{table_name}")
+        return column_name in {field.name for field in table.schema}
+    except Exception:
+        return False
+
+
+def _sql_padron_segmentacion(client, alias="pe"):
+    if _table_has_column(client, "padron_encuestas", "segmentacion"):
+        return f"COALESCE({alias}.segmentacion, '') AS segmentacion"
+    return "CAST('' AS STRING) AS segmentacion"
+
+
+def _sql_encuesta_variables_padron(client):
+    if _table_has_column(client, "encuesta_info", "variables_padron"):
+        return "e.variables_padron"
+    return "CAST('' AS STRING) AS variables_padron"
+
+
 def crear_encuesta(titulo, descripcion, preguntas, tipo_acceso="Pública", df_padron=None,
-                   empresa_dirigida="", logo_empresa="", logo_position="Centro", color_fondo="#FFFFFF"):
+                   empresa_dirigida="", logo_empresa="", logo_position="Centro", color_fondo="#FFFFFF",
+                   variables_padron=None):
     client = get_client()
     encuesta_id = str(uuid.uuid4())
     ahora = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -34,19 +86,21 @@ def crear_encuesta(titulo, descripcion, preguntas, tipo_acceso="Pública", df_pa
 
     # 1. Insertar encuesta
     tabla_encuestas = f"{PROJECT_ID}.{DATASET_ID}.encuesta_info"
-    rows_encuesta = [{"id": encuesta_id,
-                      "titulo": titulo,
-                      "descripcion": descripcion or "",
-                      "fecha_creacion": ahora,
-                      "activa": True,
-                      "tipo_acceso": tipo_acceso,
-                      "empresa_dirigida": empresa_dirigida,
-                      "logo_empresa": logo_empresa,
-                      "logo_position": logo_position,
-                      "color_fondo": color_fondo,
-                      "version_id": ahora}]
+    row_encuesta = {"id": encuesta_id,
+                    "titulo": titulo,
+                    "descripcion": descripcion or "",
+                    "fecha_creacion": ahora,
+                    "activa": True,
+                    "tipo_acceso": tipo_acceso,
+                    "empresa_dirigida": empresa_dirigida,
+                    "logo_empresa": logo_empresa,
+                    "logo_position": logo_position,
+                    "color_fondo": color_fondo,
+                    "version_id": ahora}
+    if _table_has_column(client, "encuesta_info", "variables_padron"):
+        row_encuesta["variables_padron"] = variables_padron or ""
     client.load_table_from_json(
-        rows_encuesta,
+        [row_encuesta],
         tabla_encuestas,
         job_config=job_config).result()
 
@@ -86,13 +140,15 @@ def crear_encuesta(titulo, descripcion, preguntas, tipo_acceso="Pública", df_pa
             "tienda",
             "dni_lider_directo",
             "lider_directo",
-            "orden_lider"]
+            "orden_lider",
+            "segmentacion",
+        ]
 
         for col in expected_cols:
             if col not in df_padron.columns:
-                df_padron[col] = ""
+                df_padron[col] = "" if col != "segmentacion" else "{}"
 
-        df_padron = df_padron[expected_cols]
+        df_padron = df_padron[[c for c in expected_cols if c in df_padron.columns]]
 
         text_cols = [
             "dni",
@@ -142,7 +198,7 @@ def crear_encuesta(titulo, descripcion, preguntas, tipo_acceso="Pública", df_pa
     return encuesta_id
 
 
-def obtener_todas_encuestas():
+def obtener_todas_encuestas(timeout_seconds=None):
     client = get_client()
     query = f"""
         SELECT
@@ -162,9 +218,8 @@ def obtener_todas_encuestas():
         QUALIFY ROW_NUMBER() OVER (PARTITION BY e.id ORDER BY e.fecha_creacion DESC) = 1
         ORDER BY e.fecha_creacion DESC
     """
-    job_config = bigquery.QueryJobConfig(use_query_cache=False)
-    df = client.query(query, job_config=job_config).to_dataframe()
-    return df.to_dict('records')
+    df = _query_to_dataframe(client, query, timeout_seconds=timeout_seconds)
+    return df.to_dict("records")
 
 
 def obtener_encuesta(encuesta_id):
@@ -181,6 +236,7 @@ def obtener_encuesta(encuesta_id):
             e.logo_empresa,
             e.logo_position,
             e.color_fondo,
+            {_sql_encuesta_variables_padron(client)},
             COALESCE(s.activa, TRUE) as activa
         FROM `{PROJECT_ID}.{DATASET_ID}.encuesta_info` as e
         LEFT JOIN (
@@ -200,7 +256,7 @@ def obtener_encuesta(encuesta_id):
                 encuesta_id)],
         use_query_cache=False
     )
-    df_enc = client.query(query_enc, job_config=job_config).to_dataframe()
+    df_enc = _query_to_dataframe(client, query_enc, job_config=job_config)
     if df_enc.empty:
         return None, []
 
@@ -210,7 +266,7 @@ def obtener_encuesta(encuesta_id):
         QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY COALESCE(version_id, '0') DESC) = 1
         ORDER BY COALESCE(orden, 999999) ASC, COALESCE(version_id, '0') ASC
     """
-    df_preg = client.query(query_preg, job_config=job_config).to_dataframe()
+    df_preg = _query_to_dataframe(client, query_preg, job_config=job_config)
     # Filter out logical soft-deleted questions
     df_preg = df_preg[df_preg['texto_pregunta'] != '__ELIMINADA__']
 
@@ -235,8 +291,17 @@ def actualizar_estado_encuesta(encuesta_id, estado_activo):
 
 def obtener_padron(encuesta_id):
     client = get_client()
+    seg_col = (
+        "segmentacion"
+        if _table_has_column(client, "padron_encuestas", "segmentacion")
+        else "CAST('' AS STRING) AS segmentacion"
+    )
+    if seg_col == "segmentacion":
+        seg_select = "segmentacion"
+    else:
+        seg_select = seg_col
     query = f"""
-        SELECT dni, nombre_completo, tienda, dni_lider_directo, lider_directo, orden_lider
+        SELECT dni, nombre_completo, tienda, dni_lider_directo, lider_directo, orden_lider, {seg_select}
         FROM `{PROJECT_ID}.{DATASET_ID}.padron_encuestas`
         WHERE encuesta_id = @encuesta_id
     """
@@ -553,6 +618,7 @@ def agregar_nuevas_preguntas(encuesta_id, preguntas):
 
 def obtener_resultados(encuesta_id):
     client = get_client()
+    seg_sql = _sql_padron_segmentacion(client, "pe")
     query = f"""
         WITH padron AS (
             SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.padron_encuestas` WHERE encuesta_id = @encuesta_id
@@ -571,8 +637,10 @@ def obtener_resultados(encuesta_id):
             COALESCE(pe.dni_lider_directo, r.dni_lider_directo) as dni_lider_directo,
             COALESCE(pe.lider_directo, r.lider_directo) as lider_directo,
             COALESCE(pe.orden_lider, CAST(r.orden_lider AS FLOAT64)) as orden_lider,
+            {seg_sql},
             CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END as Ruta,
             p.texto_pregunta,
+            p.tipo_pregunta,
             d.respuesta_texto
         FROM padron pe
         FULL OUTER JOIN resp r
@@ -606,11 +674,13 @@ def obtener_resultados(encuesta_id):
         # Si las tablas padron_encuestas o respuestas no existen, retornar df vacío
         import pandas as pd
         df = pd.DataFrame()
+    if not df.empty and "segmentacion" not in df.columns:
+        df["segmentacion"] = ""
+    if not df.empty and "tipo_pregunta" not in df.columns:
+        df["tipo_pregunta"] = None
     return df
 
-def agregar_padron(encuesta_id, df_nuevo_padron):
-    client = get_client()
-
+def _normalize_padron_legacy(df_padron):
     def normalize_col(c):
         c = str(c).strip().lower()
         if "dni lider" in c or "dni líder" in c:
@@ -628,13 +698,19 @@ def agregar_padron(encuesta_id, df_nuevo_padron):
         return None
 
     new_cols = {}
-    for c in df_nuevo_padron.columns:
+    for c in df_padron.columns:
         nc = normalize_col(c)
         if nc:
             new_cols[c] = nc
+    out = df_padron.rename(columns=new_cols)
+    return out.loc[:, ~out.columns.duplicated(keep="first")]
 
-    df_nuevo_padron = df_nuevo_padron.rename(columns=new_cols)
-    df_nuevo_padron = df_nuevo_padron.loc[:, ~df_nuevo_padron.columns.duplicated(keep='first')]
+
+def _prepare_padron_dataframe(df_padron, encuesta_id):
+    """Formato listo para BigQuery (con o sin mapeo de variables)."""
+    client = get_client()
+    if "segmentacion" not in df_padron.columns:
+        df_padron = _normalize_padron_legacy(df_padron)
 
     expected_cols = [
         "dni",
@@ -642,21 +718,78 @@ def agregar_padron(encuesta_id, df_nuevo_padron):
         "tienda",
         "dni_lider_directo",
         "lider_directo",
-        "orden_lider"]
+        "orden_lider",
+    ]
+    if _table_has_column(client, "padron_encuestas", "segmentacion"):
+        expected_cols.append("segmentacion")
 
     for col in expected_cols:
-        if col not in df_nuevo_padron.columns:
-            df_nuevo_padron[col] = ""
+        if col not in df_padron.columns:
+            df_padron[col] = "" if col != "segmentacion" else "{}"
 
-    df_nuevo_padron = df_nuevo_padron[expected_cols]
+    use_cols = [c for c in expected_cols if c in df_padron.columns]
+    df_padron = df_padron[use_cols].copy()
 
-    text_cols = ["dni", "nombre_completo", "tienda", "dni_lider_directo", "lider_directo"]
+    text_cols = [
+        "dni",
+        "nombre_completo",
+        "tienda",
+        "dni_lider_directo",
+        "lider_directo",
+    ]
     for col in text_cols:
-        df_nuevo_padron[col] = df_nuevo_padron[col].fillna("").astype(str).str.replace(
-            r'\.0$', '', regex=True).str.strip().replace({"nan": "", "NaT": "", "None": ""})
+        df_padron[col] = (
+            df_padron[col]
+            .fillna("")
+            .astype(str)
+            .str.replace(r"\.0$", "", regex=True)
+            .str.strip()
+            .replace({"nan": "", "NaT": "", "None": ""})
+        )
 
-    df_nuevo_padron["orden_lider"] = pd.to_numeric(df_nuevo_padron["orden_lider"], errors="coerce")
-    df_nuevo_padron["encuesta_id"] = encuesta_id
+    df_padron["orden_lider"] = pd.to_numeric(
+        df_padron["orden_lider"], errors="coerce"
+    )
+    df_padron["encuesta_id"] = encuesta_id
+    return df_padron
+
+
+def guardar_variables_padron(encuesta_id, variables_padron_json: str):
+    """Persiste el mapeo de variables del padrón en encuesta_info."""
+    client = get_client()
+    if not _table_has_column(client, "encuesta_info", "variables_padron"):
+        return
+
+    encuesta, _ = obtener_encuesta(encuesta_id)
+    if not encuesta:
+        return
+
+    ahora = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")
+    row = {
+        "id": encuesta_id,
+        "titulo": encuesta.get("titulo", ""),
+        "descripcion": encuesta.get("descripcion", ""),
+        "fecha_creacion": ahora,
+        "activa": encuesta.get("activa", True),
+        "tipo_acceso": encuesta.get("tipo_acceso", "Pública"),
+        "empresa_dirigida": encuesta.get("empresa_dirigida", ""),
+        "logo_empresa": encuesta.get("logo_empresa", ""),
+        "logo_position": encuesta.get("logo_position", "Centro"),
+        "color_fondo": encuesta.get("color_fondo", "#FFFFFF"),
+        "version_id": ahora,
+        "variables_padron": variables_padron_json or "",
+    }
+    tabla = f"{PROJECT_ID}.{DATASET_ID}.encuesta_info"
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND")
+    client.load_table_from_json([row], tabla, job_config=job_config).result()
+
+
+def agregar_padron(encuesta_id, df_nuevo_padron, variables_padron_json=None):
+    client = get_client()
+    df_nuevo_padron = _prepare_padron_dataframe(df_nuevo_padron.copy(), encuesta_id)
+
+    if variables_padron_json:
+        guardar_variables_padron(encuesta_id, variables_padron_json)
 
     df_actual = obtener_padron(encuesta_id)
     
@@ -727,20 +860,31 @@ def modificar_lideres_masivo(encuesta_id, df_modificacion):
     client = get_client()
     
     col_dni = None
-    col_lider_anterior = None
+    col_dni_lider_anterior = None
     col_nuevo_lider = None
+    col_dni_nuevo_lider = None
     
+    # Identificar las columnas dinámicamente
     for c in df_modificacion.columns:
         c_lower = str(c).lower()
-        if "dni" in c_lower:
+        if "dni" in c_lower and ("nuevo" in c_lower or "reemplazo" in c_lower):
+            col_dni_nuevo_lider = c
+        elif "dni" in c_lower and ("anterior" in c_lower or "reemplazar" in c_lower or "viejo" in c_lower or "antiguo" in c_lower):
+            col_dni_lider_anterior = c
+        elif "dni" in c_lower and "lider" not in c_lower and "líder" not in c_lower:
             col_dni = c
-        elif "reemplazar" in c_lower or "anterior" in c_lower:
-            col_lider_anterior = c
         elif "nuevo" in c_lower or "correcto" in c_lower:
             col_nuevo_lider = c
             
-    if not col_dni or not col_nuevo_lider:
-        raise ValueError("El Excel debe contener al menos las columnas para DNI y Nuevo Líder.")
+    # Fallback para col_dni si no se encontró
+    if not col_dni:
+        for c in df_modificacion.columns:
+            if "dni" in str(c).lower() and c != col_dni_nuevo_lider and c != col_dni_lider_anterior:
+                col_dni = c
+                break
+
+    if not col_dni or not col_nuevo_lider or not col_dni_lider_anterior:
+        raise ValueError("La plantilla debe contener al menos las columnas: DNI del Colaborador, DNI del Líder a reemplazar, y Nuevo Líder.")
         
     # Leer todo el padron (evitar DML)
     query = f"SELECT * FROM `{PROJECT_ID}.{DATASET_ID}.padron_encuestas`"
@@ -767,12 +911,21 @@ def modificar_lideres_masivo(encuesta_id, df_modificacion):
             
         mask = (df_all['encuesta_id'] == encuesta_id) & (df_all['dni_str'] == dni)
         
-        if col_lider_anterior and pd.notna(row[col_lider_anterior]) and str(row[col_lider_anterior]).strip() and str(row[col_lider_anterior]).strip().lower() != "nan":
-            lider_anterior = str(row[col_lider_anterior]).strip()
-            mask = mask & (df_all['lider_directo'].astype(str) == lider_anterior)
+        # Filtrar por DNI LIDER ANTERIOR
+        dni_lider_ant = str(row[col_dni_lider_anterior]).strip()
+        if dni_lider_ant.endswith('.0'):
+            dni_lider_ant = dni_lider_ant[:-2]
+            
+        if dni_lider_ant and dni_lider_ant.lower() != "nan":
+            mask = mask & (df_all['dni_lider_directo'].astype(str) == dni_lider_ant)
             
         if mask.sum() > 0:
             df_all.loc[mask, 'lider_directo'] = nuevo_lider
+            if col_dni_nuevo_lider and pd.notna(row[col_dni_nuevo_lider]) and str(row[col_dni_nuevo_lider]).strip() and str(row[col_dni_nuevo_lider]).strip().lower() != "nan":
+                dni_nl = str(row[col_dni_nuevo_lider]).strip()
+                if dni_nl.endswith('.0'):
+                    dni_nl = dni_nl[:-2]
+                df_all.loc[mask, 'dni_lider_directo'] = dni_nl
             num_modificados += mask.sum()
             
     if num_modificados == 0:

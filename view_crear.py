@@ -4,6 +4,7 @@ import base64
 import pandas as pd
 from bigquery_operations import crear_encuesta
 from components import render_question_builder_fields
+from padron_variables import build_default_mapping
 
 
 def get_base64_image(image_path):
@@ -40,6 +41,8 @@ def callback_seguir_editando():
         st.session_state[f"op_counter_{q_id}"] = len(p["opciones"])
 
     st.session_state["preguntas_ids"] = preg_ids
+    st.session_state["global_df_padron_temp"] = c.get("df_padron")
+    st.session_state["global_df_padron_variables_temp"] = c.get("df_padron_variables")
     st.session_state["fase_vista"] = "formulario"
     st.toast("✏️ Regresando al modo edición...")
 
@@ -77,10 +80,19 @@ def callback_previsualizar_encuesta():
         if "preview_errores" in st.session_state:
             del st.session_state["preview_errores"]
         enc_b64 = st.session_state.get("global_logo_base64_temp", "")
+        from padron_variables import mapping_to_json
         st.session_state.backup_crear = {
             "titulo": titulo, "descripcion": descripcion, "empresa_dirigida": empresa_dirigida,
             "logo_position": logo_position, "color_fondo": color_fondo, "tipo_acceso": tipo_acceso,
-            "df_padron": st.session_state.get("global_df_padron_temp"), "logo_empresa_b64": enc_b64, "preguntas": preguntas_reales
+            "df_padron": st.session_state.get("global_df_padron_temp"),
+            "variables_padron": mapping_to_json(
+                st.session_state.get("padron_variable_mapping", [])
+            ),
+            "df_padron_variables": st.session_state.get("global_df_padron_variables_temp"),
+            "variables_padron_analysis": mapping_to_json(
+                st.session_state.get("padron_variables_variable_mapping", [])
+            ),
+            "logo_empresa_b64": enc_b64, "preguntas": preguntas_reales
         }
         st.session_state["fase_vista"] = "preview"
 
@@ -385,7 +397,8 @@ def render_escenario_preview():
             enc_id = crear_encuesta(
                 titulo=backup.get("titulo"), descripcion=backup.get("descripcion"), preguntas=backup.get("preguntas"),
                 tipo_acceso=backup.get("tipo_acceso"), df_padron=backup.get("df_padron"), empresa_dirigida=backup.get("empresa_dirigida"),
-                logo_empresa=backup.get("logo_empresa_b64"), logo_position=backup.get("logo_position"), color_fondo=backup.get("color_fondo")
+                logo_empresa=backup.get("logo_empresa_b64"), logo_position=backup.get("logo_position"), color_fondo=backup.get("color_fondo"),
+                variables_padron=backup.get("variables_padron", ""),
             )
             st.session_state["encuesta_creada_id"] = enc_id
             st.session_state["fase_vista"] = "formulario"
@@ -442,30 +455,81 @@ def render_escenario_form():
     if "Privada" in acceso:
         col_up, col_dl = st.columns([0.7, 0.3])
 
+        from padron_variables import (
+            apply_padron_mapping,
+            generate_padron_template_bytes,
+            generate_padron_lider_template_bytes,
+            render_padron_variable_mapper,
+        )
+
         with col_dl:
             st.markdown(
-                "<p style='font-size: 15px; font-weight: bold; color: #ff4b4b; margin-bottom: 6px; margin-top: 2px;'>✨ Plantilla Excel</p>",
-                unsafe_allow_html=True)
-            try:
-                with open("Plantilla_Padron.xlsx", "rb") as template_file:
-                    st.download_button(
-                        label="⬇️ Descargar Plantilla",
-                        data=template_file,
-                        file_name="Plantilla_Padron.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-            except Exception:
-                pass
+                "<p class='brand-link' style='font-size: 18px; margin-bottom: 6px; margin-top: 2px;'>"
+                "✨ Plantilla Padrón</p>",
+                unsafe_allow_html=True,
+            )
+            st.download_button(
+                label="⬇️ Descargar Plantilla",
+                data=generate_padron_lider_template_bytes(),
+                file_name="Plantilla_Padron.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            st.caption(
+                "Columnas **DNI**, **Nombre Completo** y **Líder Directo** obligatorias."
+            )
 
         with col_up:
+            st.markdown(
+                "<p style='font-size: 18px; margin-bottom: 10px;'>📂 Adjuntar Archivo de Padrón</p>",
+                unsafe_allow_html=True,
+            )
             padron = st.file_uploader(
-                "📂 Adjuntar Archivo de Padrón", type=[
-                    "xlsx", "xls"])
+                "", type=["xlsx", "xls"], label_visibility="collapsed", key="crear_padron")
             if padron:
-                st.session_state["global_df_padron_temp"] = pd.read_excel(
-                    padron)
-                st.success("✅ Padrón cargado correctamente.")
+                df_raw = pd.read_excel(padron)
+                mapping = build_default_mapping(df_raw.columns)
+                st.session_state["global_df_padron_temp"] = apply_padron_mapping(
+                    df_raw, mapping
+                )
+                st.success("✅ Padrón cargado exitosamente.")
+
+        st.divider()
+
+        col_up2, col_dl2 = st.columns([0.7, 0.3])
+
+        with col_dl2:
+            st.markdown(
+                "<p class='brand-link' style='font-size: 18px; margin-bottom: 6px; margin-top: 2px;'>"
+                "✨ Plantilla variables</p>",
+                unsafe_allow_html=True,
+            )
+            st.download_button(
+                label="⬇️ Descargar Plantilla",
+                data=generate_padron_template_bytes(),
+                file_name="Plantilla_Padron_Variables.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            st.caption(
+                "Columna **DNI** obligatoria. Las variables adicionales se detectan "
+                "automáticamente del Excel. Puedes agregar más columnas según necesites."
+            )
+
+        with col_up2:
+            st.markdown(
+                "<p style='font-size: 18px; margin-bottom: 10px;'>📂 Adjuntar Variables de Análisis (Opcional)</p>",
+                unsafe_allow_html=True,
+            )
+            padron_variables = st.file_uploader(
+                "", type=["xlsx", "xls"], label_visibility="collapsed", key="crear_padron_variables")
+            if padron_variables:
+                df_raw = pd.read_excel(padron_variables)
+                mapping = render_padron_variable_mapper(df_raw)
+                st.session_state["global_df_padron_variables_temp"] = apply_padron_mapping(
+                    df_raw, mapping
+                )
+                st.success("✅ Variables de análisis cargadas y configuradas.")
 
     st.markdown("### ❓ Preguntas")
     if "preguntas_ids" not in st.session_state:

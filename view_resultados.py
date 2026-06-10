@@ -10,7 +10,7 @@ def render_ver_respuestas(encuesta_id):
             "viendo_respuestas_id",
             None))
 
-    enc, _ = obtener_encuesta(encuesta_id)
+    enc, preguntas = obtener_encuesta(encuesta_id)
     df_resultados = obtener_resultados(encuesta_id)
 
     if not enc:
@@ -33,11 +33,6 @@ def render_ver_respuestas(encuesta_id):
     if df_resultados.empty:
         st.info("Aún no hay respuestas para esta encuesta.")
     else:
-        total_respuestas = df_resultados['respuesta_id'].nunique()
-        st.success(
-            f"Hay un total de **{total_respuestas}** encuestas completadas.")
-
-        st.markdown("### Datos Detallados")
 
         # Transformar a formato ancho (una fila por usuario, columnas por
         # pregunta)
@@ -103,17 +98,132 @@ def render_ver_respuestas(encuesta_id):
         if 'respuesta_id' in df_pivot.columns:
             df_pivot = df_pivot.drop(columns=['respuesta_id'])
 
+        from theme import show_plotly_chart
+        from dashboard_charts import (
+            build_participation_donut,
+            build_participation_gauge,
+            render_private_kpi_metrics,
+            render_public_kpi_metrics,
+        )
+        from dashboard_results import render_results_dashboard
+        from padron_variables import (
+            expand_segmentacion_column,
+            get_segment_dimensions,
+            mapping_from_json,
+        )
+
+        df_base = expand_segmentacion_column(df_base)
+        var_mapping = mapping_from_json(enc.get("variables_padron"))
+        segment_dims = get_segment_dimensions(var_mapping, df_base.columns)
+
+        tab_part, tab_res = st.tabs([
+            "📈 Participación",
+            "🎯 Resultados (Scores)",
+        ])
+
+        with tab_part:
+            st.markdown("### Dashboard de Participación")
+
+            if enc.get('tipo_acceso') == 'Pública':
+                total_respuestas = df_resultados['respuesta_id'].nunique()
+                render_public_kpi_metrics(total_respuestas, df_resultados)
+            else:
+                total_esperado = len(df_base)
+                total_respuestas = df_base[
+                    pd.to_numeric(df_base['Ruta'], errors='coerce') == 1
+                ].shape[0]
+                faltantes = total_esperado - total_respuestas
+                porcentaje = (
+                    (total_respuestas / total_esperado * 100)
+                    if total_esperado > 0
+                    else 0
+                )
+
+                render_private_kpi_metrics(
+                    total_esperado, total_respuestas, faltantes, porcentaje
+                )
+
+                if total_esperado > 0:
+                    st.progress(
+                        min(porcentaje / 100, 1.0),
+                        text=(
+                            f"{total_respuestas} de {total_esperado} "
+                            "evaluaciones completadas"
+                        ),
+                    )
+
+                    c_donut, c_gauge = st.columns(2)
+                    with c_donut:
+                        show_plotly_chart(
+                            build_participation_donut(
+                                total_respuestas, faltantes, porcentaje
+                            ),
+                        )
+                    with c_gauge:
+                        show_plotly_chart(build_participation_gauge(porcentaje))
+
+        with tab_res:
+            st.markdown("### Dashboard de Resultados")
+            st.caption(
+                "Scores de liderazgo (Likert) y NPS por pregunta. "
+                "Filtra por las variables del padrón (tienda, puesto, etc.)."
+            )
+            render_results_dashboard(
+                df_resultados,
+                preguntas,
+                df_base,
+                segment_dims,
+                var_mapping=var_mapping,
+            )
+
+        st.divider()
+        st.markdown("### 📋 Datos Detallados")
+
         st.dataframe(df_pivot, hide_index=True)
 
-        # Botón de descarga CSV
-        csv = df_pivot.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="⬇️ Descargar resultados (CSV)",
-            data=csv,
-            file_name=f"resultados_{enc.get('titulo', 'encuesta')}.csv",
-            mime='text/csv',
-            type="primary"
-        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_down1, col_down2 = st.columns(2)
+        
+        import io
+        
+        with col_down1:
+            # Botón de descarga Excel de todos
+            buffer_todos = io.BytesIO()
+            with pd.ExcelWriter(buffer_todos, engine='openpyxl') as writer:
+                df_pivot.to_excel(writer, index=False, sheet_name='Resultados')
+            
+            st.download_button(
+                label="⬇️ Descargar TODOS los resultados",
+                data=buffer_todos.getvalue(),
+                file_name=f"resultados_{enc.get('titulo', 'encuesta')}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                type="primary",
+                use_container_width=True
+            )
+            
+        with col_down2:
+            if enc.get('tipo_acceso') != 'Pública' and 'Ruta' in df_pivot.columns:
+                df_pendientes = df_pivot[pd.to_numeric(df_pivot['Ruta'], errors='coerce') == 0].copy()
+                if 'respuesta_id' in index_cols:
+                    index_cols.remove('respuesta_id')
+                df_pendientes = df_pendientes[[c for c in index_cols if c in df_pendientes.columns]]
+                
+                if df_pendientes.empty:
+                    st.success("🎉 ¡Todos han completado la encuesta!")
+                else:
+                    buffer_pendientes = io.BytesIO()
+                    with pd.ExcelWriter(buffer_pendientes, engine='openpyxl') as writer:
+                        df_pendientes.to_excel(writer, index=False, sheet_name='Pendientes')
+                    
+                    st.download_button(
+                        label="⬇️ Descargar PENDIENTES",
+                        data=buffer_pendientes.getvalue(),
+                        file_name=f"pendientes_{enc.get('titulo', 'encuesta')}.xlsx",
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        type="secondary",
+                        help="Descargar un archivo solo con los colaboradores que aún no han completado la encuesta.",
+                        use_container_width=True
+                    )
 
         if enc.get('tipo_acceso') != 'Pública':
             st.divider()

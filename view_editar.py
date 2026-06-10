@@ -117,14 +117,18 @@ def render_editar_encuesta(encuesta_id):
             with col_der:
                 with st.container(border=True):
                     import pandas as pd
-                    from padron_variables import (
-                        apply_padron_mapping,
-                        build_default_mapping,
-                        generate_padron_template_bytes,
-                        generate_padron_lider_template_bytes,
-                        mapping_to_json,
-                        render_padron_variable_mapper,
-                    )
+                    try:
+                        from padron_variables import (
+                            apply_padron_mapping,
+                            build_default_mapping,
+                            generate_padron_template_bytes,
+                            generate_padron_lider_template_bytes,
+                            mapping_to_json,
+                            render_padron_variable_mapper,
+                        )
+                    except ImportError:
+                        st.error("Error al cargar módulo de variables de padrón")
+                        return
 
                     st.markdown("### ➕ Agregar personas al padrón")
                     st.download_button(
@@ -162,12 +166,16 @@ def render_editar_encuesta(encuesta_id):
             with col_der:
                 with st.container(border=True):
                     import pandas as pd
-                    from padron_variables import (
-                        apply_padron_mapping,
-                        generate_padron_template_bytes,
-                        mapping_to_json,
-                        render_padron_variable_mapper,
-                    )
+                    try:
+                        from padron_variables import (
+                            apply_padron_mapping,
+                            generate_padron_template_bytes,
+                            mapping_to_json,
+                            render_padron_variable_mapper,
+                        )
+                    except ImportError:
+                        st.error("Error al cargar módulo de variables de padrón")
+                        return
 
                     st.markdown("### ➕ Agregar variables de análisis (Opcional)")
                     st.download_button(

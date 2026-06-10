@@ -98,23 +98,36 @@ def render_ver_respuestas(encuesta_id):
         if 'respuesta_id' in df_pivot.columns:
             df_pivot = df_pivot.drop(columns=['respuesta_id'])
 
-        from theme import show_plotly_chart
-        from dashboard_charts import (
-            build_participation_donut,
-            build_participation_gauge,
-            render_private_kpi_metrics,
-            render_public_kpi_metrics,
-        )
-        from dashboard_results import render_results_dashboard
-        from padron_variables import (
-            expand_segmentacion_column,
-            get_segment_dimensions,
-            mapping_from_json,
-        )
-
-        df_base = expand_segmentacion_column(df_base)
-        var_mapping = mapping_from_json(enc.get("variables_padron"))
-        segment_dims = get_segment_dimensions(var_mapping, df_base.columns)
+        try:
+            from theme import show_plotly_chart
+        except ImportError:
+            show_plotly_chart = None
+        try:
+            from dashboard_charts import (
+                build_participation_donut,
+                build_participation_gauge,
+                render_private_kpi_metrics,
+                render_public_kpi_metrics,
+            )
+        except ImportError:
+            pass
+        try:
+            from dashboard_results import render_results_dashboard
+        except ImportError:
+            pass
+        try:
+            from padron_variables import (
+                expand_segmentacion_column,
+                get_segment_dimensions,
+                mapping_from_json,
+            )
+            df_base = expand_segmentacion_column(df_base)
+            var_mapping = mapping_from_json(enc.get("variables_padron"))
+            segment_dims = get_segment_dimensions(var_mapping, df_base.columns)
+        except ImportError:
+            df_base = df_base
+            var_mapping = None
+            segment_dims = None
 
         tab_part, tab_res = st.tabs([
             "📈 Participación",

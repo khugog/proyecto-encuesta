@@ -11,11 +11,11 @@ st.set_page_config(
     page_icon="🎯",
     layout="centered")
 
-from theme import inject_global_css
-
-st.markdown(
-    inject_global_css()
-    + """
+try:
+    from theme import inject_global_css
+    st.markdown(
+        inject_global_css()
+        + """
 <style>
     .main { font-family: 'Inter', sans-serif; }
     h1 { font-weight: 800; text-align: center; margin-bottom: 20px; }
@@ -79,6 +79,8 @@ st.markdown(
     }
 </style>
 """, unsafe_allow_html=True)
+except ImportError:
+    pass
 
 
 def main():

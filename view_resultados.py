@@ -115,9 +115,19 @@ def render_ver_respuestas(encuesta_id):
             from dashboard_results import render_results_dashboard
         except ImportError:
             pass
-        # Padrón functionality temporarily disabled
-        var_mapping = None
-        segment_dims = None
+        try:
+            from padron_de_variable import (
+                expand_segmentacion_column,
+                get_segment_dimensions,
+                mapping_from_json,
+            )
+            df_base = expand_segmentacion_column(df_base)
+            var_mapping = mapping_from_json(enc.get("variables_padron"))
+            segment_dims = get_segment_dimensions(var_mapping, df_base.columns)
+        except ImportError:
+            df_base = df_base
+            var_mapping = None
+            segment_dims = None
 
         tab_part, tab_res = st.tabs([
             "📈 Participación",

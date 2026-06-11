@@ -116,7 +116,99 @@ def render_editar_encuesta(encuesta_id):
             
             with col_der:
                 with st.container(border=True):
-                    st.info("⚠️ Funcionalidad de padrón temporalmente deshabilitada en esta versión.")
+                    import pandas as pd
+                    try:
+                        from padron_de_variable import (
+                            apply_padron_mapping,
+                            build_default_mapping,
+                            generate_padron_template_bytes,
+                            generate_padron_lider_template_bytes,
+                            mapping_to_json,
+                            render_padron_variable_mapper,
+                        )
+                    except ImportError:
+                        st.error("Error al cargar módulo de variables de padrón")
+                        return
+
+                    st.markdown("### ➕ Agregar personas al padrón")
+                    st.download_button(
+                        label="⬇️ Plantilla Padrón",
+                        data=generate_padron_lider_template_bytes(),
+                        file_name="Plantilla_Padron.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                    st.markdown(
+                        "<p style='font-size: 18px; margin-bottom: 10px;'>📂 Subir archivo Excel</p>",
+                        unsafe_allow_html=True,
+                    )
+                    nuevo_excel = st.file_uploader(
+                        "",
+                        type=["xlsx", "xls"],
+                        label_visibility="collapsed",
+                        key="edit_nuevo_padron",
+                    )
+                    if nuevo_excel:
+                        df_raw = pd.read_excel(nuevo_excel)
+                        mapping = build_default_mapping(df_raw.columns)
+                        st.session_state["edit_padron_df_mapped"] = (
+                            apply_padron_mapping(df_raw, mapping)
+                        )
+                        st.session_state["edit_padron_mapping_json"] = (
+                            mapping_to_json(mapping)
+                        )
+                        st.success(
+                            "✅ Archivo listo. Pulse **Guardar cambios** para incorporarlo."
+                        )
+
+            st.divider()
+
+            with col_der:
+                with st.container(border=True):
+                    import pandas as pd
+                    try:
+                        from padron_de_variable import (
+                            apply_padron_mapping,
+                            generate_padron_template_bytes,
+                            mapping_to_json,
+                            render_padron_variable_mapper,
+                        )
+                    except ImportError:
+                        st.error("Error al cargar módulo de variables de padrón")
+                        return
+
+                    st.markdown("### ➕ Agregar variables de análisis (Opcional)")
+                    st.download_button(
+                        label="⬇️ Plantilla variables (DNI + Var.2–5)",
+                        data=generate_padron_template_bytes(),
+                        file_name="Plantilla_Padron_Variables.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                    st.markdown(
+                        "<p style='font-size: 18px; margin-bottom: 10px;'>📂 Subir archivo Excel de variables</p>",
+                        unsafe_allow_html=True,
+                    )
+                    nuevo_excel_variables = st.file_uploader(
+                        "",
+                        type=["xlsx", "xls"],
+                        label_visibility="collapsed",
+                        key="edit_nuevo_padron_variables",
+                    )
+                    if nuevo_excel_variables:
+                        df_raw = pd.read_excel(nuevo_excel_variables)
+                        mapping = render_padron_variable_mapper(
+                            df_raw, state_prefix="edit_variables_"
+                        )
+                        st.session_state["edit_padron_variables_df_mapped"] = (
+                            apply_padron_mapping(df_raw, mapping)
+                        )
+                        st.session_state["edit_padron_variables_mapping_json"] = (
+                            mapping_to_json(mapping)
+                        )
+                        st.success(
+                            "✅ Variables de análisis listas. Pulse **Guardar cambios** para incorporarlas."
+                        )
 
             st.divider()
             st.markdown("### ⚙️ Gestión Masiva de Padrón")

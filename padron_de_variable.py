@@ -289,34 +289,42 @@ def expand_segmentacion_column(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def generate_padron_template_bytes() -> bytes:
-    """Excel: DNI (obligatorio) + Variables dinámicas (puedes agregar más columnas)."""
-    headers = ["DNI", "Variable_2", "Variable_3", "Variable_4", "Variable_5", "Variable_6", "Variable_7"]
-    ejemplo = {
-        "DNI": ["12345678", "87654321"],
-        "Variable_2": ["Tienda Centro", "Tienda Norte"],
-        "Variable_3": ["Cajero", "Supervisor"],
-        "Variable_4": ["Juan Pérez", "María López"],
-        "Variable_5": ["Masculino", "Femenino"],
-        "Variable_6": ["Ventas", "Operaciones"],
-        "Variable_7": ["Lima", "Arequipa"],
-    }
-    df = pd.DataFrame({h: ejemplo.get(h, ["", ""]) for h in headers})
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Padron")
-    return buf.getvalue()
+    """Excel: Lee el archivo padron_de_variable.xlsx existente."""
+    try:
+        with open("padron_de_variable.xlsx", "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        # Fallback si no existe el archivo
+        headers = ["DNI", "Variable_2", "Variable_3", "Variable_4", "Variable_5"]
+        ejemplo = {
+            "DNI": ["12345678", "87654321"],
+            "Variable_2": ["Tienda Centro", "Tienda Norte"],
+            "Variable_3": ["Cajero", "Supervisor"],
+            "Variable_4": ["Juan Pérez", "María López"],
+            "Variable_5": ["Masculino", "Femenino"],
+        }
+        df = pd.DataFrame({h: ejemplo.get(h, ["", ""]) for h in headers})
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Padron")
+        return buf.getvalue()
 
 
 def generate_padron_lider_template_bytes() -> bytes:
-    """Excel: DNI (obligatorio) + Nombre Completo + Líder Directo para encuestas privadas."""
-    headers = ["DNI", "Nombre Completo", "Líder Directo"]
-    ejemplo = {
-        "DNI": ["12345678", "87654321", "11223344"],
-        "Nombre Completo": ["Juan Pérez García", "María López Sánchez", "Carlos Rodríguez Méndez"],
-        "Líder Directo": ["Ana Martínez", "Pedro Gómez", "Ana Martínez"],
-    }
-    df = pd.DataFrame({h: ejemplo.get(h, ["", ""]) for h in headers})
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Padron")
-    return buf.getvalue()
+    """Excel: Lee el archivo plantilla_padron.xlsx existente."""
+    try:
+        with open("plantilla_padron.xlsx", "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        # Fallback si no existe el archivo
+        headers = ["DNI", "Nombre Completo", "Líder Directo"]
+        ejemplo = {
+            "DNI": ["12345678", "87654321", "11223344"],
+            "Nombre Completo": ["Juan Pérez García", "María López Sánchez", "Carlos Rodríguez Méndez"],
+            "Líder Directo": ["Ana Martínez", "Pedro Gómez", "Ana Martínez"],
+        }
+        df = pd.DataFrame({h: ejemplo.get(h, ["", ""]) for h in headers})
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Padron")
+        return buf.getvalue()
